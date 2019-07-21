@@ -1,6 +1,9 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <LoRa.h>
 #include "board_def.h"
+
+#define LORA_SENDER 0
 
 // Config OLED
 OLED_CLASS_OBJ display(OLED_ADDRESS, OLED_SDA, OLED_SCL);
@@ -61,11 +64,17 @@ void setup(void)
 
     // Grab a count of devices on the wire
     //numberOfDevices = sensors.getDeviceCount(); // This function doesn't work :(
+#if LORA_SENDER
     numberOfDevices = 2;
+#else
+    numberOfDevices = 0;
+#endif
 
     // Display in OLED
     display.clear();
-    display.drawString(display.getWidth() / 2 - 22, display.getHeight() / 2 - 32, "Devices: " + String(numberOfDevices));
+#if LORA_SENDER
+    display.drawString(display.getWidth() / 2 - 22, display.getHeight() / 2 - 32, "Sender:");
+#endif
     display.display();
 
     // locate devices on the bus
@@ -111,60 +120,117 @@ void setup(void)
             Serial.println(" but could not detect address. Check power and cabling");
         }
     }
+
+    // LoRa setup
+    SPI.begin(CONFIG_CLK, CONFIG_MISO, CONFIG_MOSI, CONFIG_NSS);
+    LoRa.setPins(CONFIG_NSS, CONFIG_RST, CONFIG_DIO0);
+    if (!LoRa.begin(BAND))
+    {
+        Serial.println("Starting LoRa failed!");
+        while (1)
+            ;
+    }
+    if (!LORA_SENDER)
+    {
+        display.clear();
+        display.drawString(display.getWidth() / 2, display.getHeight() / 2, "LoraRecv Ready");
+        display.display();
+    }
+
+    // LED
+    pinMode(LED_BUILTIN, OUTPUT);
 }
 
-// function to print the temperature for a device
-void printTemperature(DeviceAddress deviceAddress, int tIndex)
+#if LORA_SENDER
+// function to send the temperature through LoRa
+void sendTemperature(DeviceAddress deviceAddress, int tIndex)
 {
-    // method 1 - slower
-    //Serial.print("Temp C: ");
-    //Serial.print(sensors.getTempC(deviceAddress));
-    //Serial.print(" Temp F: ");
-    //Serial.print(sensors.getTempF(deviceAddress)); // Makes a second call to getTempC and then converts to Fahrenheit
-
-    // method 2 - faster
     float tempC = sensors.getTempC(deviceAddress);
     Serial.print("Temp C: ");
-    Serial.print(tempC);
+    Serial.println(tempC);
 
-    // Print data to OLED
-    if (tIndex == 0) {
+    // Send data through LoRa
+    LoRa.beginPacket();
+    if (tIndex == 0)
+    {
+        LoRa.print("Temp 1: " + String(tempC) + " C");
         display.clear();
-        display.drawString(display.getWidth() / 2 - 22, display.getHeight() / 2 - 32, "Devices: " + String(numberOfDevices));
+        display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 32, "Sender >>>>>>>");
         display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 4, "Temp 1: " + String(tempC) + " C");
-    } else {
+    }
+    else
+    {
+        LoRa.print("Temp 2: " + String(tempC) + " C");
         display.drawString(display.getWidth() / 2, display.getHeight() / 2 + 16, "Temp 2: " + String(tempC) + " C");
         display.display();
     }
+    LoRa.endPacket();
 }
-int flag = 1;
+#else
+void printTemperature(String recv, int value)
+{
+    // Print data from LoRa
+    if (value % 2 == 0)
+    {
+        display.clear();
+        display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 32, ">>>>> Receiver");
+        display.drawString(display.getWidth() / 2, display.getHeight() / 2 - 4, recv);
+    }
+    else
+    {
+        display.drawString(display.getWidth() / 2, display.getHeight() / 2 + 16, recv);
+        display.display();
+    }
+}
+#endif
+
+int value = 0;
 void loop(void)
 {
-    if (flag)
+#if LORA_SENDER
+    // call sensors.requestTemperatures() to issue a global temperature
+    // request to all devices on the bus
+    Serial.print("Requesting temperatures...");
+    sensors.requestTemperatures(); // Send the command to get temperatures
+    Serial.println("DONE");
+
+    // Loop through each device, print out temperature data
+    for (int i = 0; i < numberOfDevices; i++)
     {
-        // call sensors.requestTemperatures() to issue a global temperature
-        // request to all devices on the bus
-        Serial.print("Requesting temperatures...");
-        sensors.requestTemperatures(); // Send the command to get temperatures
-        Serial.println("DONE");
-
-        // Loop through each device, print out temperature data
-        for (int i = 0; i < numberOfDevices; i++)
+        // Search the wire for address
+        if (sensors.getAddress(tempDeviceAddress, i))
         {
-            // Search the wire for address
-            if (sensors.getAddress(tempDeviceAddress, i))
-            {
-                // Output the device ID
-                Serial.print("Temperature for device: ");
-                Serial.println(i, DEC);
+            // Output the device ID
+            Serial.print("Temperature for device: ");
+            Serial.println(i, DEC);
 
-                // It responds almost immediately. Let's print out the data
-                printTemperature(tempDeviceAddress, i); // Use a simple function to print out the data
-            }
-            //else ghost device! Check your power requirements and cabling
+            // It responds almost immediately. Let's print out the data
+            sendTemperature(tempDeviceAddress, i); // Use a simple function to print out the data
         }
-        //flag = 0;
-
-        delay(1000);
+        //else ghost device! Check your power requirements and cabling
     }
+    delay(1000);
+    // Toggle BUILTIN led
+    if (value++ % 2 == 0)
+        digitalWrite(LED_BUILTIN, HIGH); // Turn the LED on
+    else
+        digitalWrite(LED_BUILTIN, LOW); // Turn the LED off
+#else
+    if (LoRa.parsePacket())
+    {
+        String recv = "";
+        while (LoRa.available())
+        {
+            recv += (char)LoRa.read();
+        }
+
+        // Print temperature
+        printTemperature(recv, value);
+        // Toggle BUILTIN led
+        if (value++ % 2 == 0)
+            digitalWrite(LED_BUILTIN, HIGH); // Turn the LED on
+        else
+            digitalWrite(LED_BUILTIN, LOW); // Turn the LED off
+    }
+#endif
 }

@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+// LCD
 #include <Wire.h>
 #include "SSD1306Wire.h" 
 #define OLED_CLASS_OBJ  SSD1306Wire
@@ -13,3 +14,7 @@
 #define CONFIG_NSS  18
 #define CONFIG_RST  14
 #define CONFIG_DIO0 26
+
+// LoRa
+#define LORA_PERIOD 868
+#define BAND 868E6
